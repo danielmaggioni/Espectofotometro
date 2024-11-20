@@ -9,48 +9,50 @@ TFT_HX8357 tft = TFT_HX8357();
 #define VOUT A0
 #define INTVAL A1
 #define Pino_SD 53
-#define Pino_Botao 13
+#define pinCalibracao 7
+#define pinGravacao 13
 
 int Faktor = 4;
 long exposure;
 int brilhos[128];
-byte Status_Botao;
+int I0[128]; // Valores de referência
+float transmitancia[128];
+float absorbancia[128];
+bool modoCalibracao = false;
 
 void setup() {
   Serial.begin(38400);
-  pinMode(Pino_Botao, INPUT_PULLUP);
   pinMode(Pino_SD, OUTPUT);
   pinMode(siPin, OUTPUT);
   pinMode(clockPin, OUTPUT);
-
-  // Setup the LCD
+  pinMode(pinCalibracao, INPUT_PULLUP); // Botão de calibração
+  pinMode(pinGravacao, INPUT_PULLUP);  // Botão de gravação
+  
+  // Setup do LCD
   tft.init();
   tft.setRotation(1);
-
   tft.fillScreen(TFT_BLACK);
-  tft.fillRect(0, 0, 480, 14, tft.color565(210, 210, 210));
-
   tft.setTextColor(tft.color565(255, 255, 255), tft.color565(0, 0, 0));
-  tft.drawCentreString("400", 10 + 19, 310, 1);
-  tft.drawCentreString("440", 10 + 19 + 1 * 50.6, 310, 1);
-  tft.drawCentreString("480", 10 + 19 + 2 * 50.6, 310, 1);
-  tft.drawCentreString("520", 10 + 19 + 3 * 50.6, 310, 1);
-  tft.drawCentreString("560", 10 + 19 + 4 * 50.6, 310, 1);
-  tft.drawCentreString("600", 10 + 19 + 5 * 50.6, 310, 1);
-  tft.drawCentreString("640", 10 + 19 + 6 * 50.6, 310, 1);
-  tft.drawCentreString("680", 10 + 19 + 7 * 50.6, 310, 1);
-  tft.drawCentreString("[nm]", 420, 310, 1);
 
-  tft.drawCentreString("exposicao =", 438, 140, 1);
-  tft.drawCentreString("msec", 438, 180, 1);
+  tft.fillRect(0, 0, 480, 14, tft.color565(210, 210, 210));
+  tft.drawCentreString("Espectrometro", CENTRE, 3, 1);
+
+  // Inicializa valores de I0 como zero
+  for (int i = 0; i < 128; i++) {
+    I0[i] = 0;
+  }
 }
 
 void loop() {
-  //Rotina Para Salvar os dados no Cartao SD quando o Botao é pressionado
-  Status_Botao = digitalRead(Pino_Botao);
+  // Verifica se o botão de calibração foi pressionado
+  if (digitalRead(pinCalibracao) == LOW) {
+    modoCalibracao = true;
+    capturaI0();
+    modoCalibracao = false;
+  }
 
-  if (Status_Botao == LOW) {
-    while (Status_Botao == LOW) {
+  if (digitalRead(pinGravacao)== LOW) {
+    while (digitalRead(pinGravacao) == LOW) {
       tft.fillScreen(TFT_BLACK);
       tft.setTextColor(tft.color565(255, 255, 255), tft.color565(0, 0, 0));
       tft.print("Gravando os dados no Cartão");
@@ -64,32 +66,72 @@ void loop() {
       return;
     }
   }
-
-  tft.drawLine(10, 300, 10 + 380, 300, tft.color565(255, 255, 255));
-
   tft.fillRect(10, 15, 382, 285, TFT_BLACK);
 
   exposure = analogRead(INTVAL);
   exposure /= 4;
 
+  // Captura os valores de brilho
   getCamera();
 
-  tft.fillRect(410, 160, 70, 10, TFT_BLACK);
-  tft.setTextColor(tft.color565(255, 255, 255), tft.color565(0, 0, 0));
-  tft.drawNumber(exposure, 428, 160, 1);
+  // Calcula e exibe T e A se não estiver no modo de calibração
+  if (!modoCalibracao) {
+    calculaAnalises();
+  }
 
+  // Desenha gráfico
   for (int i = 0; i < 128; i++) {
-    int x = 10 + i *3;
+    int x = 10 + i * 3;
     int y1 = 299;
     int y2 = y1 - brilhos[i];
 
     tft.drawLine(x, y1, x, y2, GetColorByIndex(i));
   }
 
-  tft.setTextColor(tft.color565(20, 20, 255), tft.color565(210, 210, 210));
-  tft.drawCentreString("Espctrometro", CENTRE, 3, 1);
-
   delay(900);
+}
+
+void capturaI0() {
+  tft.fillScreen(TFT_BLACK);
+  tft.drawCentreString("Modo Calibracao", CENTRE, 100, 1);
+
+  getCamera(); // Captura os valores iniciais de referência
+
+  for (int i = 0; i < 128; i++) {
+    I0[i] = brilhos[i];
+  }
+
+  tft.fillScreen(TFT_BLACK);
+  tft.drawCentreString("I0 capturado!", CENTRE, 100, 1);
+  delay(1000);
+}
+
+void calculaAnalises() {
+  for (int i = 0; i < 128; i++) {
+    if (I0[i] > 0) {
+      transmitancia[i] = (float) brilhos[i] / I0[i];
+      absorbancia[i] = -log10(transmitancia[i]);
+    } else {
+      transmitancia[i] = 0;
+      absorbancia[i] = 0;
+    }
+  }
+
+  // Exibe um exemplo no display e no Serial Monitor
+  tft.fillRect(410, 160, 70, 10, TFT_BLACK);
+  tft.drawNumber((int)(transmitancia[64] * 100), 428, 160, 1); // Exemplo de transmitância para 520 nm
+
+  Serial.println("Transmitância e Absorbância:");
+  for (int i = 0; i < 128; i++) {
+    Serial.print("T[");
+    Serial.print(i);
+    Serial.print("] = ");
+    Serial.print(transmitancia[i]);
+    Serial.print("  A[");
+    Serial.print(i);
+    Serial.print("] = ");
+    Serial.println(absorbancia[i]);
+  }
 }
 
 void getCamera() {
@@ -137,66 +179,26 @@ void Inicializa_SDcard() {
     return;
   }
 }
-
-
-/*uint16_t GetColorByIndex(int index) {
-  int red, green, blue;
-
-  if (index >= 0 && index < 32) {
-    // Azul
-    red = 0;
-    green = 0;
-    blue = 255;
-  } else if (index >= 32 && index < 64) {
-    // Verde
-    red = 0;
-    green = 255;
-    blue = 0;
-  } else if (index >= 64 && index < 96) {
-    // Amarelo
-    red = 255;
-    green = 255;
-    blue = 0;
-  } else if (index >= 96 && index < 128) {
-    // Vermelho
-    red = 255;
-    green = 0;
-    blue = 0;
-  } else {
-    // Preto (caso de índice inválido)
-    red = 0;
-    green = 0;
-    blue = 0;
-  }
-
-  return tft.color565(red, green, blue);
-}
-*/
 uint16_t GetColorByIndex(int index) {
   int red, green, blue;
 
   if (index >= 0 && index < 32) {
-    // Azul (400-440 nm)
     red = 0;
     green = 0;
     blue = map(index, 0, 31, 160, 255);
   } else if (index >= 32 && index < 64) {
-    // Verde (440-520 nm)
     red = 0;
     green = map(index, 32, 63, 200, 255);
     blue = 0;
   } else if (index >= 64 && index < 96) {
-    // Amarelo (520-600 nm)
     red = map(index, 64, 95, 255, 255);
     green = map(index, 64, 95, 255, 255);
     blue = 0;
   } else if (index >= 96 && index < 128) {
-    // Vermelho (600-700 nm)
     red = map(index, 96, 127, 255, 160);
     green = 0;
     blue = 0;
   } else {
-    // Preto (caso de índice inválido)
     red = 0;
     green = 0;
     blue = 0;
